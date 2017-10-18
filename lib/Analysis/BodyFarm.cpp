@@ -63,8 +63,7 @@ public:
   
   /// Create a new DeclRefExpr for the referenced variable.
   DeclRefExpr *makeDeclRefExpr(const VarDecl *D,
-                               bool RefersToEnclosingVariableOrCapture = false,
-                               bool GetNonReferenceType = false);
+                               bool RefersToEnclosingVariableOrCapture = false);
   
   /// Create a new UnaryOperator representing a dereference.
   UnaryOperator *makeDereference(const Expr *Arg, QualType Ty);
@@ -78,16 +77,11 @@ public:
   /// Create an implicit cast for lvalue-to-rvaluate conversions.
   ImplicitCastExpr *makeLvalueToRvalue(const Expr *Arg, QualType Ty);
   
-  /// Create an implicit cast for lvalue-to-rvaluate conversions.
-  ImplicitCastExpr *makeLvalueToRvalue(const Expr *Arg,
-                                       bool GetNonReferenceType = false);
-
   /// Make RValue out of variable declaration, creating a temporary
   /// DeclRefExpr in the process.
   ImplicitCastExpr *
   makeLvalueToRvalue(const VarDecl *Decl,
-                     bool RefersToEnclosingVariableOrCapture = false,
-                     bool GetNonReferenceType = false);
+                     bool RefersToEnclosingVariableOrCapture = false);
 
   /// Create an implicit cast of the given type.
   ImplicitCastExpr *makeImplicitCast(const Expr *Arg, QualType Ty,
@@ -112,7 +106,7 @@ public:
 
   /// Returns a *first* member field of a record declaration with a given name.
   /// \return an nullptr if no member with such a name exists.
-  NamedDecl *findMemberField(const CXXRecordDecl *RD, StringRef Name);
+  ValueDecl *findMemberField(const RecordDecl *RD, StringRef Name);
 
 private:
   ASTContext &C;
@@ -142,12 +136,10 @@ CompoundStmt *ASTMaker::makeCompound(ArrayRef<Stmt *> Stmts) {
   return new (C) CompoundStmt(C, Stmts, SourceLocation(), SourceLocation());
 }
 
-DeclRefExpr *ASTMaker::makeDeclRefExpr(const VarDecl *D,
-                                       bool RefersToEnclosingVariableOrCapture,
-                                       bool GetNonReferenceType) {
-  auto Type = D->getType();
-  if (GetNonReferenceType)
-    Type = Type.getNonReferenceType();
+DeclRefExpr *ASTMaker::makeDeclRefExpr(
+    const VarDecl *D,
+    bool RefersToEnclosingVariableOrCapture) {
+  QualType Type = D->getType().getNonReferenceType();
 
   DeclRefExpr *DR = DeclRefExpr::Create(
       C, NestedNameSpecifierLoc(), SourceLocation(), const_cast<VarDecl *>(D),
@@ -164,25 +156,12 @@ ImplicitCastExpr *ASTMaker::makeLvalueToRvalue(const Expr *Arg, QualType Ty) {
   return makeImplicitCast(Arg, Ty, CK_LValueToRValue);
 }
 
-ImplicitCastExpr *ASTMaker::makeLvalueToRvalue(const Expr *Arg,
-                                               bool GetNonReferenceType) {
-
-  QualType Type = Arg->getType();
-  if (GetNonReferenceType)
-    Type = Type.getNonReferenceType();
-  return makeImplicitCast(Arg, Type, CK_LValueToRValue);
-}
-
 ImplicitCastExpr *
 ASTMaker::makeLvalueToRvalue(const VarDecl *Arg,
-                             bool RefersToEnclosingVariableOrCapture,
-                             bool GetNonReferenceType) {
-  auto Type = Arg->getType();
-  if (GetNonReferenceType)
-    Type = Type.getNonReferenceType();
+                             bool RefersToEnclosingVariableOrCapture) {
+  QualType Type = Arg->getType().getNonReferenceType();
   return makeLvalueToRvalue(makeDeclRefExpr(Arg,
-                                            RefersToEnclosingVariableOrCapture,
-                                            GetNonReferenceType),
+                                            RefersToEnclosingVariableOrCapture),
                             Type);
 }
 
@@ -247,7 +226,7 @@ MemberExpr *ASTMaker::makeMemberExpression(Expr *base, ValueDecl *MemberDecl,
       OK_Ordinary);
 }
 
-NamedDecl *ASTMaker::findMemberField(const CXXRecordDecl *RD, StringRef Name) {
+ValueDecl *ASTMaker::findMemberField(const RecordDecl *RD, StringRef Name) {
 
   CXXBasePaths Paths(
       /* FindAmbiguities=*/false,
@@ -259,7 +238,7 @@ NamedDecl *ASTMaker::findMemberField(const CXXRecordDecl *RD, StringRef Name) {
   DeclContextLookupResult Decls = RD->lookup(DeclName);
   for (NamedDecl *FoundDecl : Decls)
     if (!FoundDecl->getDeclContext()->isFunctionOrMethod())
-      return FoundDecl;
+      return cast<ValueDecl>(FoundDecl);
 
   return nullptr;
 }
@@ -270,10 +249,9 @@ NamedDecl *ASTMaker::findMemberField(const CXXRecordDecl *RD, StringRef Name) {
 
 typedef Stmt *(*FunctionFarmer)(ASTContext &C, const FunctionDecl *D);
 
-static CallExpr *
-create_call_once_funcptr_call(ASTContext &C, ASTMaker M,
-                              const ParmVarDecl *Callback,
-                              SmallVectorImpl<Expr *> &CallArgs) {
+static CallExpr *create_call_once_funcptr_call(ASTContext &C, ASTMaker M,
+                                               const ParmVarDecl *Callback,
+                                               ArrayRef<Expr *> CallArgs) {
 
   return new (C) CallExpr(
       /*ASTContext=*/C,
@@ -284,10 +262,10 @@ create_call_once_funcptr_call(ASTContext &C, ASTMaker M,
       /*SourceLocation=*/SourceLocation());
 }
 
-static CallExpr *
-create_call_once_lambda_call(ASTContext &C, ASTMaker M,
-                             const ParmVarDecl *Callback, QualType CallbackType,
-                             SmallVectorImpl<Expr *> &CallArgs) {
+static CallExpr *create_call_once_lambda_call(ASTContext &C, ASTMaker M,
+                                              const ParmVarDecl *Callback,
+                                              QualType CallbackType,
+                                              ArrayRef<Expr *> CallArgs) {
 
   CXXRecordDecl *CallbackDecl = CallbackType->getAsCXXRecordDecl();
 
@@ -305,12 +283,6 @@ create_call_once_lambda_call(ASTContext &C, ASTMaker M,
                           /* NameLoc = */ SourceLocation(),
                           /* T = */ callOperatorDecl->getType(),
                           /* VK = */ VK_LValue);
-
-  CallArgs.insert(
-      CallArgs.begin(),
-      M.makeDeclRefExpr(Callback,
-                        /* RefersToEnclosingVariableOrCapture= */ true,
-                        /* GetNonReferenceType= */ true));
 
   return new (C)
       CXXOperatorCallExpr(/*AstContext=*/C, OO_Call, callOperatorDeclRef,
@@ -347,16 +319,54 @@ static Stmt *create_call_once(ASTContext &C, const FunctionDecl *D) {
   const ParmVarDecl *Flag = D->getParamDecl(0);
   const ParmVarDecl *Callback = D->getParamDecl(1);
   QualType CallbackType = Callback->getType().getNonReferenceType();
+  QualType FlagType = Flag->getType().getNonReferenceType();
+  auto *FlagRecordDecl = dyn_cast_or_null<RecordDecl>(FlagType->getAsTagDecl());
+
+  if (!FlagRecordDecl) {
+    DEBUG(llvm::dbgs() << "Flag field is not a record: "
+                       << "unknown std::call_once implementation, "
+                       << "ignoring the call.\n");
+    return nullptr;
+  }
+
+  // We initially assume libc++ implementation of call_once,
+  // where the once_flag struct has a field `__state_`.
+  ValueDecl *FlagFieldDecl = M.findMemberField(FlagRecordDecl, "__state_");
+
+  // Otherwise, try libstdc++ implementation, with a field
+  // `_M_once`
+  if (!FlagFieldDecl) {
+    DEBUG(llvm::dbgs() << "No field __state_ found on std::once_flag struct, "
+                       << "assuming libstdc++ implementation\n");
+    FlagFieldDecl = M.findMemberField(FlagRecordDecl, "_M_once");
+  }
+
+  if (!FlagFieldDecl) {
+    DEBUG(llvm::dbgs() << "No field _M_once found on std::once flag struct: "
+                       << "unknown std::call_once implementation, "
+                       << "ignoring the call");
+    return nullptr;
+  }
+
+  bool isLambdaCall = CallbackType->getAsCXXRecordDecl() &&
+                      CallbackType->getAsCXXRecordDecl()->isLambda();
 
   SmallVector<Expr *, 5> CallArgs;
 
+  if (isLambdaCall)
+    // Lambda requires callback itself inserted as a first parameter.
+    CallArgs.push_back(
+        M.makeDeclRefExpr(Callback,
+                          /* RefersToEnclosingVariableOrCapture= */ true));
+
   // All arguments past first two ones are passed to the callback.
   for (unsigned int i = 2; i < D->getNumParams(); i++)
-    CallArgs.push_back(M.makeLvalueToRvalue(D->getParamDecl(i)));
+    CallArgs.push_back(
+        M.makeLvalueToRvalue(D->getParamDecl(i),
+                             /* RefersToEnclosingVariableOrCapture= */ false));
 
   CallExpr *CallbackCall;
-  if (CallbackType->getAsCXXRecordDecl() &&
-      CallbackType->getAsCXXRecordDecl()->isLambda()) {
+  if (isLambdaCall) {
 
     CallbackCall =
         create_call_once_lambda_call(C, M, Callback, CallbackType, CallArgs);
@@ -366,29 +376,12 @@ static Stmt *create_call_once(ASTContext &C, const FunctionDecl *D) {
     CallbackCall = create_call_once_funcptr_call(C, M, Callback, CallArgs);
   }
 
-  QualType FlagType = Flag->getType().getNonReferenceType();
   DeclRefExpr *FlagDecl =
       M.makeDeclRefExpr(Flag,
-                        /* RefersToEnclosingVariableOrCapture=*/true,
-                        /* GetNonReferenceType=*/true);
+                        /* RefersToEnclosingVariableOrCapture=*/true);
 
-  CXXRecordDecl *FlagCXXDecl = FlagType->getAsCXXRecordDecl();
 
-  // Note: here we are assuming libc++ implementation of call_once,
-  // which has a struct with a field `__state_`.
-  // Body farming might not work for other `call_once` implementations.
-  NamedDecl *FoundDecl = M.findMemberField(FlagCXXDecl, "__state_");
-  ValueDecl *FieldDecl;
-  if (FoundDecl) {
-    FieldDecl = dyn_cast<ValueDecl>(FoundDecl);
-  } else {
-    DEBUG(llvm::dbgs() << "No field __state_ found on std::once_flag struct, "
-                       << "unable to synthesize call_once body, ignoring "
-                       << "the call.\n");
-    return nullptr;
-  }
-
-  MemberExpr *Deref = M.makeMemberExpression(FlagDecl, FieldDecl);
+  MemberExpr *Deref = M.makeMemberExpression(FlagDecl, FlagFieldDecl);
   assert(Deref->isLValue());
   QualType DerefType = Deref->getType();
 
